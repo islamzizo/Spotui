@@ -1,7 +1,7 @@
 package com.music.spotui.data.monochrome
 
-/** Configure the Monochrome Unified Playback service used by native playback. */
+/** Monochrome Unified Playback configuration. */
 data object MonochromeConfig {
-    const val BASE_URL = "https://monochrome-music.pages.dev"
-    const val API_TOKEN = ""
+    // Public Monochrome instance. No user API token is required.
+    const val BASE_URL = "https://api.monochrome.tf"
 }
