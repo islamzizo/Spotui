@@ -1,16 +1,15 @@
 package com.music.spotui.data.monochrome
 
-import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.IOException
 
-/** Minimal native client for Monochrome Unified Playback. */
+/** Native client for Monochrome Unified Playback. */
 class MonochromeClient(
-    private val baseUrl: String = BuildConfig.MONOCHROME_BASE_URL,
-    private val apiToken: String = BuildConfig.MONOCHROME_API_TOKEN,
+    private val baseUrl: String = MonochromeConfig.BASE_URL,
+    private val apiToken: String = MonochromeConfig.API_TOKEN,
     private val httpClient: OkHttpClient = OkHttpClient(),
 ) {
     private val json = Json { ignoreUnknownKeys = true }
@@ -24,8 +23,7 @@ class MonochromeClient(
         quality: String = "high",
     ): MonochromePlayback? {
         val url = buildString {
-            append(baseUrl.trimEnd('/'))
-            append("/api/v2/track/")
+            append(baseUrl.trimEnd('/')); append("/api/v2/track/")
             append("?track=").append(track.urlEncode())
             append("&artist=").append(artist.urlEncode())
             if (album.isNotBlank()) append("&album=").append(album.urlEncode())
@@ -36,21 +34,18 @@ class MonochromeClient(
         val request = Request.Builder().url(url).apply {
             if (apiToken.isNotBlank()) header("Authorization", "Bearer $apiToken")
         }.get().build()
-
         val body = httpClient.newCall(request).execute().use { response ->
             if (!response.isSuccessful) throw IOException("Monochrome HTTP ${response.code}")
             response.body?.string() ?: return null
         }
-        return json.decodeFromString<MonochromeResponse>(body).playback.firstOrNull { resource ->
-            resource.url.isNotBlank() && (resource.kind == "audio" || resource.kind == "manifest")
+        return json.decodeFromString<MonochromeResponse>(body).playback.firstOrNull {
+            it.url.isNotBlank() && (it.kind == "audio" || it.kind == "manifest")
         }
     }
 }
 
 @Serializable
-data class MonochromeResponse(
-    val playback: List<MonochromePlayback> = emptyList(),
-)
+data class MonochromeResponse(val playback: List<MonochromePlayback> = emptyList())
 
 @Serializable
 data class MonochromePlayback(
@@ -61,5 +56,4 @@ data class MonochromePlayback(
     val quality: String? = null,
 )
 
-private fun String.urlEncode(): String =
-    java.net.URLEncoder.encode(this, Charsets.UTF_8.name())
+private fun String.urlEncode(): String = java.net.URLEncoder.encode(this, Charsets.UTF_8.name())
