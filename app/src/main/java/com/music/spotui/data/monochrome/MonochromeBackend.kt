@@ -7,6 +7,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.net.URLEncoder
 
+/** Resolves Spotify metadata to a playable URL using Monochrome only. */
 class MonochromeBackend(
     private val baseUrl: String = MonochromeConfig.BASE_URL,
     private val token: String = MonochromeConfig.API_TOKEN,
@@ -15,8 +16,15 @@ class MonochromeBackend(
     private val json = Json { ignoreUnknownKeys = true }
 
     suspend fun resolve(song: SongsModel): String? = runCatching {
-        val query = "${baseUrl.trimEnd('/')}/api/v2/track/?track=${enc(song.title)}&artist=${enc(song.singer)}&album=${enc(song.album)}&intent=stream"
-        val request = Request.Builder().url(query).apply {
+        val url = buildString {
+            append(baseUrl.trimEnd('/')); append("/api/v2/track/")
+            append("?track=").append(enc(song.title))
+            append("&artist=").append(enc(song.singer))
+            if (song.album.isNotBlank()) append("&album=").append(enc(song.album))
+            if (song.durationMs > 0) append("&duration=").append(song.durationMs / 1000)
+            append("&intent=stream&quality=high")
+        }
+        val request = Request.Builder().url(url).apply {
             if (token.isNotBlank()) header("Authorization", "Bearer $token")
         }.build()
         client.newCall(request).execute().use { response ->
