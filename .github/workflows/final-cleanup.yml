@@ -1,0 +1,28 @@
+name: Final Monochrome cleanup
+on:
+  push:
+    branches: [monochrome-backend]
+    paths: ['tools/final_cleanup.py','.github/workflows/final-cleanup.yml']
+permissions:
+  contents: write
+jobs:
+  cleanup:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.x'}
+      - run: python3 tools/final_cleanup.py
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: '17'}
+      - run: ./gradlew :app:assembleDebug --stacktrace
+      - name: Commit
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm -f tools/final_cleanup.py .github/workflows/final-cleanup.yml .github/workflows/monochrome-ci.yml
+          git add -A
+          git commit -m 'Remove final legacy playback compatibility code' || exit 0
+          git push origin monochrome-backend
