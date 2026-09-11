@@ -17,5 +17,3 @@ dependencyResolutionManagement {
 rootProject.name = "spotui"
 include(":app")
 include(":spotify")
-include(":innertube")
- 
