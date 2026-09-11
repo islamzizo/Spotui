@@ -8,6 +8,10 @@ plugins {
 }
 
 android {
+    buildFeatures {
+        buildConfig = true
+    }
+
     namespace = "com.music.spotui"
     compileSdk = 34
     defaultConfig {
