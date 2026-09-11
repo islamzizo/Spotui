@@ -13,161 +13,55 @@ import java.io.OutputStream
 import java.net.URI
 import java.util.Base64
 import java.util.concurrent.TimeUnit
-import kotlin.math.abs
 
 /** Direct client for Monochrome's official Hi-Fi API. The Monochrome web UI is not used. */
 object MonochromeClient {
-    private const val TAG = "MonochromeClient"
-    private val instances = listOf("https://api.monochrome.tf", "https://monochrome-api.samidy.com")
-    private val http = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS)
-        .callTimeout(40, TimeUnit.SECONDS).build()
+    private const val TAG="MonochromeClient"
+    private val instances=listOf("https://api.monochrome.tf","https://monochrome-api.samidy.com")
+    private val http=OkHttpClient.Builder().connectTimeout(10,TimeUnit.SECONDS).readTimeout(30,TimeUnit.SECONDS).callTimeout(40,TimeUnit.SECONDS).build()
+    data class Resolved(val url:String,val qualityLabel:String,val isDash:Boolean)
+    private data class Candidate(val id:String,val title:String,val artist:String,val duration:Int)
 
-    data class Resolved(val url: String, val qualityLabel: String, val isDash: Boolean)
-    private data class Candidate(val id: String, val title: String, val artist: String, val duration: Int)
-
-    suspend fun search(query: String, limit: Int = 12): List<Candidate> = withContext(Dispatchers.IO) {
-        for (base in instances) {
-            runCatching {
-                val u = "$base/search/".toHttpUrl().newBuilder()
-                    .addQueryParameter("s", query).addQueryParameter("limit", limit.toString()).build()
-                val root = getJson(u.toString()) ?: return@runCatching
-                val items = root.optJSONObject("data")?.optJSONArray("items") ?: JSONArray()
-                val out = buildList {
-                    for (i in 0 until items.length()) {
-                        val o = items.optJSONObject(i) ?: continue
-                        val artist = o.optJSONArray("artists")?.optJSONObject(0)?.optString("name")
-                            ?: o.optJSONObject("artist")?.optString("name").orEmpty()
-                        add(Candidate(o.optString("id"), o.optString("title"), artist, o.optInt("duration", 0)))
-                    }
-                }
-                if (out.isNotEmpty()) return@withContext out
-            }.onFailure { Log.w(TAG, "search failed on $base: ${it.message}") }
-        }
+    suspend fun search(query:String,limit:Int=12):List<Candidate>=withContext(Dispatchers.IO){
+        for(base in instances){runCatching{
+            val u="$base/search/".toHttpUrl().newBuilder().addQueryParameter("s",query).addQueryParameter("limit",limit.toString()).build();val root=getJson(u.toString())?:return@runCatching;val items=root.optJSONObject("data")?.optJSONArray("items")?:JSONArray()
+            val out=buildList{for(i in 0 until items.length()){val o=items.optJSONObject(i)?:continue;val artist=o.optJSONArray("artists")?.optJSONObject(0)?.optString("name")?:o.optJSONObject("artist")?.optString("name").orEmpty();add(Candidate(o.optString("id"),o.optString("title"),artist,o.optInt("duration",0)))}}
+            if(out.isNotEmpty())return@withContext out
+        }.onFailure{Log.w(TAG,"search failed on $base: ${it.message}")}}
         emptyList()
     }
 
-    suspend fun resolveSpotifyQuery(song: String): Resolved? = withContext(Dispatchers.IO) {
-        if (song.startsWith("content://") || song.startsWith("file://")) return@withContext Resolved(song, "Local", false)
-        val query = song.substringAfter('|', song.removePrefix("spotify:track:"))
-        val parts = query.trim().split(Regex("\\s+"))
-        val expectedTitle = if (parts.size > 1) parts.dropLast(1).joinToString(" ") else query
-        val expectedArtist = parts.lastOrNull().orEmpty()
-        val candidates = search(query)
-        val best = candidates.maxByOrNull { c ->
-            similarity(c.title, expectedTitle) * 3.0 + similarity(c.artist, expectedArtist) +
-                if (c.duration > 0) 0.1 else 0.0
-        } ?: return@withContext null
+    suspend fun resolveSpotifyQuery(song:String):Resolved?=withContext(Dispatchers.IO){
+        if(song.startsWith("content://")||song.startsWith("file://"))return@withContext Resolved(song,"Local",false)
+        val query=song.substringAfter('|',song.removePrefix("spotify:track:"));val parts=query.trim().split(Regex("\\s+"));val expectedTitle=if(parts.size>1)parts.dropLast(1).joinToString(" ")else query;val expectedArtist=parts.lastOrNull().orEmpty()
+        val best=search(query).maxByOrNull{c->similarity(c.title,expectedTitle)*3.0+similarity(c.artist,expectedArtist)+(if(c.duration>0)0.1 else 0.0)}?:return@withContext null
         resolveTrack(best.id)
     }
 
-    suspend fun resolveTrack(trackId: String): Resolved? = withContext(Dispatchers.IO) {
-        for (base in instances) {
-            try {
-                val u = "$base/trackManifests/".toHttpUrl().newBuilder()
-                    .addQueryParameter("id", trackId).addQueryParameter("quality", "LOSSLESS")
-                    .addQueryParameter("adaptive", "false").addQueryParameter("formats", "FLAC")
-                    .addQueryParameter("usage", "PLAYBACK").build()
-                val root = getJson(u.toString()) ?: continue
-                val manifestUri = extractManifestUri(root) ?: continue
-                val manifest = getText(manifestUri) ?: continue
-                if (manifest.contains("<MPD", true)) {
-                    val duration = Regex("mediaPresentationDuration=\"PT(?:([0-9]+)H)?(?:([0-9]+)M)?([0-9.]+)S\"")
-                        .find(manifest)?.let { m ->
-                            (m.groupValues[1].toDoubleOrNull() ?: 0.0) * 3600 +
-                                (m.groupValues[2].toDoubleOrNull() ?: 0.0) * 60 +
-                                (m.groupValues[3].toDoubleOrNull() ?: 0.0)
-                        }
-                    if (duration != null && duration < 45.0) continue
-                    return@withContext Resolved(manifestUri, "FLAC 16-bit", true)
-                }
-                extractFlacUrl(manifest)?.let { return@withContext Resolved(it, "FLAC 16-bit", false) }
-            } catch (e: Exception) { Log.w(TAG, "resolve failed on $base: ${e.message}") }
-        }
+    suspend fun resolveTrack(trackId:String):Resolved?=withContext(Dispatchers.IO){
+        for(base in instances){try{
+            val u="$base/trackManifests/".toHttpUrl().newBuilder().addQueryParameter("id",trackId).addQueryParameter("quality","LOSSLESS").addQueryParameter("adaptive","false").addQueryParameter("formats","FLAC").addQueryParameter("usage","PLAYBACK").build();val root=getJson(u.toString())?:continue;val manifestUri=extractManifestUri(root)?:continue;val manifest=getText(manifestUri)?:continue
+            if(manifest.contains("<MPD",true)){val duration=Regex("mediaPresentationDuration=\"PT(?:([0-9]+)H)?(?:([0-9]+)M)?([0-9.]+)S\"").find(manifest)?.let{m->(m.groupValues[1].toDoubleOrNull()?:0.0)*3600+(m.groupValues[2].toDoubleOrNull()?:0.0)*60+(m.groupValues[3].toDoubleOrNull()?:0.0)};if(duration!=null&&duration<45.0)continue;return@withContext Resolved(manifestUri,"FLAC 16-bit",true)}
+            extractFlacUrl(manifest)?.let{return@withContext Resolved(it,"FLAC 16-bit",false)}
+        }catch(e:Exception){Log.w(TAG,"resolve failed on $base: ${e.message}")}}
         null
     }
 
-    private fun getJson(url: String): JSONObject? = runCatching {
-        val req = Request.Builder().url(url).header("User-Agent", "Spotui/Monochrome Android").build()
-        http.newCall(req).execute().use { if (!it.isSuccessful) null else JSONObject(it.body?.string().orEmpty()) }
-    }.getOrNull()
+    private fun getJson(url:String):JSONObject? = runCatching{val req=Request.Builder().url(url).header("User-Agent","Spotui/Monochrome Android").build();http.newCall(req).execute().use{if(!it.isSuccessful)null else JSONObject(it.body?.string().orEmpty())}}.getOrNull()
+    private fun getText(url:String):String?=runCatching{val req=Request.Builder().url(url).header("User-Agent","Spotui/Monochrome Android").build();http.newCall(req).execute().use{if(!it.isSuccessful)null else it.body?.string()}}.getOrNull()
+    private fun extractManifestUri(root:JSONObject):String?{val data=root.optJSONObject("data");val nested=data?.optJSONObject("data")?:data?:root;return nested.optJSONObject("attributes")?.optString("uri")?.takeIf{it.startsWith("http")}}
+    private fun extractFlacUrl(text:String):String?{fun parse(raw:String):String? = runCatching{val urls=JSONObject(raw).optJSONArray("urls")?:return@runCatching null;for(i in 0 until urls.length())urls.optString(i).takeIf{it.isNotBlank()}?.let{return@runCatching it};null}.getOrNull();return parse(text)?:runCatching{Base64.getMimeDecoder().decode(text.trim()).toString(Charsets.UTF_8)}.getOrNull()?.let(::parse)}
+    private fun similarity(a:String,b:String):Double{val aa=normalize(a);val bb=normalize(b);if(aa==bb)return 1.0;if(aa.isBlank()||bb.isBlank())return 0.0;val wa=aa.split(' ').filter{it.isNotBlank()}.toSet();val wb=bb.split(' ').filter{it.isNotBlank()}.toSet();return wa.intersect(wb).size.toDouble()/maxOf(wa.size,wb.size,1)}
+    private fun normalize(s:String)=s.lowercase().replace(Regex("[^\\p{L}\\p{Nd} ]")," ").replace(Regex("\\s+")," ").trim()
 
-    private fun getText(url: String): String? = runCatching {
-        val req = Request.Builder().url(url).header("User-Agent", "Spotui/Monochrome Android").build()
-        http.newCall(req).execute().use { if (!it.isSuccessful) null else it.body?.string() }
-    }.getOrNull()
+    suspend fun downloadDashToFlac(manifestUrl:String,out:File,query:String,progress:java.util.concurrent.ConcurrentHashMap<String,Int>):Boolean=withContext(Dispatchers.IO){try{
+        val mpd=getText(manifestUrl)?:return@withContext false;val init=Regex("initialization=\"([^\"]+)\"").find(mpd)?.groupValues?.get(1)?:return@withContext false;val media=Regex("media=\"([^\"]+)\"").find(mpd)?.groupValues?.get(1)?:return@withContext false;val start=Regex("startNumber=\"(\\d+)\"").find(mpd)?.groupValues?.get(1)?.toIntOrNull()?:1;val count=Regex("<S\\b[^>]*/?>").findAll(mpd).sumOf{1+(Regex("\\br=\"(\\d+)\"").find(it.value)?.groupValues?.get(1)?.toIntOrNull()?:0)};if(count<=0)return@withContext false
+        val initBytes=getBytes(resolveUrl(manifestUrl,init))?:return@withContext false;val streamInfo=findStreamInfo(initBytes)?:return@withContext false
+        out.outputStream().buffered().use{os->os.write(byteArrayOf(0x66,0x4c,0x61,0x43));os.write(0x80);os.write((streamInfo.size ushr 16) and 255);os.write((streamInfo.size ushr 8) and 255);os.write(streamInfo.size and 255);os.write(streamInfo);for(n in start until start+count){val bytes=getBytes(resolveUrl(manifestUrl,media.replace("\$Number\$",n.toString())))?:return@withContext false;writeMdat(bytes,os);progress[query]=(((n-start+1)*100)/count).coerceIn(0,100)}};progress[query]=100;true
+    }catch(e:Exception){Log.w(TAG,"DASH download failed: ${e.message}");false}}
 
-    private fun extractManifestUri(root: JSONObject): String? {
-        val data = root.optJSONObject("data")
-        val nested = data?.optJSONObject("data") ?: data ?: root
-        return nested.optJSONObject("attributes")?.optString("uri")?.takeIf { it.startsWith("http") }
-    }
-
-    private fun extractFlacUrl(text: String): String? {
-        fun parse(raw: String): String? = runCatching {
-            val urls = JSONObject(raw).optJSONArray("urls") ?: return@runCatching null
-            for (i in 0 until urls.length()) urls.optString(i).takeIf { it.isNotBlank() }?.let { return@runCatching it }
-            null
-        }.getOrNull()
-        return parse(text) ?: runCatching { Base64.getMimeDecoder().decode(text.trim()).toString(Charsets.UTF_8) }.getOrNull()?.let(::parse)
-    }
-
-    private fun similarity(a: String, b: String): Double {
-        val aa = normalize(a); val bb = normalize(b)
-        if (aa == bb) return 1.0
-        if (aa.isBlank() || bb.isBlank()) return 0.0
-        val wa = aa.split(' ').filter { it.isNotBlank() }.toSet()
-        val wb = bb.split(' ').filter { it.isNotBlank() }.toSet()
-        return wa.intersect(wb).size.toDouble() / maxOf(wa.size, wb.size, 1)
-    }
-    private fun normalize(s: String) = s.lowercase().replace(Regex("[^\\p{L}\\p{Nd} ]"), " ").replace(Regex("\\s+"), " ").trim()
-
-    /** Remux Monochrome's DASH-FLAC representation into a normal FLAC file for offline use. */
-    suspend fun downloadDashToFlac(manifestUrl: String, out: File, query: String, progress: java.util.concurrent.ConcurrentHashMap<String, Int>): Boolean = withContext(Dispatchers.IO) {
-        try {
-            val mpd = getText(manifestUrl) ?: return@withContext false
-            val init = Regex("initialization=\"([^\"]+)\"").find(mpd)?.groupValues?.get(1) ?: return@withContext false
-            val media = Regex("media=\"([^\"]+)\"").find(mpd)?.groupValues?.get(1) ?: return@withContext false
-            val start = Regex("startNumber=\"(\\d+)\"").find(mpd)?.groupValues?.get(1)?.toIntOrNull() ?: 1
-            val count = Regex("<S\\b[^>]*/?>").findAll(mpd).sumOf { 1 + (Regex("\\br=\"(\\d+)\"").find(it.value)?.groupValues?.get(1)?.toIntOrNull() ?: 0) }
-            if (count <= 0) return@withContext false
-            val initBytes = getBytes(resolveUrl(manifestUrl, init)) ?: return@withContext false
-            val streamInfo = findStreamInfo(initBytes) ?: return@withContext false
-            out.outputStream().buffered().use { os ->
-                os.write(byteArrayOf(0x66, 0x4c, 0x61, 0x43)); os.write(0x80)
-                os.write((streamInfo.size ushr 16) and 255); os.write((streamInfo.size ushr 8) and 255); os.write(streamInfo.size and 255); os.write(streamInfo)
-                for (n in start until start + count) {
-                    val bytes = getBytes(resolveUrl(manifestUrl, media.replace("$Number$", n.toString()))) ?: return@withContext false
-                    writeMdat(bytes, os)
-                    progress[query] = (((n - start + 1) * 100) / count).coerceIn(0, 100)
-                }
-            }
-            progress[query] = 100; true
-        } catch (e: Exception) { Log.w(TAG, "DASH download failed: ${e.message}"); false }
-    }
-
-    private fun resolveUrl(base: String, value: String): String = if (value.startsWith("http")) value else URI(base).resolve(value).toString()
-    private fun getBytes(url: String): ByteArray? = runCatching {
-        val req = Request.Builder().url(url).header("User-Agent", "Spotui/Monochrome Android").build()
-        http.newCall(req).execute().use { if (!it.isSuccessful) null else it.body?.bytes() }
-    }.getOrNull()
-    private fun findStreamInfo(bytes: ByteArray): ByteArray? {
-        val tag = byteArrayOf(0x64,0x66,0x4c,0x61)
-        for (i in 0..(bytes.size - tag.size - 8).coerceAtLeast(-1)) if (i >= 0 && tag.indices.all { bytes[i+it] == tag[it] }) {
-            val len=((bytes[i+9].toInt() and 255) shl 16) or ((bytes[i+10].toInt() and 255) shl 8) or (bytes[i+11].toInt() and 255)
-            if (len > 0 && i+12+len <= bytes.size) return bytes.copyOfRange(i+12,i+12+len)
-        }
-        return null
-    }
-    private fun writeMdat(bytes: ByteArray, out: OutputStream) {
-        var i=0
-        while(i+8<=bytes.size){
-            var size=((bytes[i].toLong() and 255) shl 24) or ((bytes[i+1].toLong() and 255) shl 16) or ((bytes[i+2].toLong() and 255) shl 8) or (bytes[i+3].toLong() and 255)
-            var header=8
-            if(size==1L){if(i+16>bytes.size)return;size=(0..7).fold(0L){a,n->(a shl 8) or (bytes[i+8+n].toLong() and 255)};header=16}
-            if(size<header || i+size>bytes.size)return
-            if(bytes[i+4]==0x6d.toByte()&&bytes[i+5]==0x64.toByte()&&bytes[i+6]==0x61.toByte()&&bytes[i+7]==0x74.toByte())out.write(bytes,i+header,(size-header).toInt())
-            i+=size.toInt()
-        }
-    }
+    private fun resolveUrl(base:String,value:String)=if(value.startsWith("http"))value else URI(base).resolve(value).toString()
+    private fun getBytes(url:String):ByteArray?=runCatching{val req=Request.Builder().url(url).header("User-Agent","Spotui/Monochrome Android").build();http.newCall(req).execute().use{if(!it.isSuccessful)null else it.body?.bytes()}}.getOrNull()
+    private fun findStreamInfo(bytes:ByteArray):ByteArray?{val tag=byteArrayOf(0x64,0x66,0x4c,0x61);for(i in 0..(bytes.size-tag.size-8).coerceAtLeast(-1))if(i>=0&&tag.indices.all{bytes[i+it]==tag[it]}){val len=((bytes[i+9].toInt()and 255)shl 16)or((bytes[i+10].toInt()and 255)shl 8)or(bytes[i+11].toInt()and 255);if(len>0&&i+12+len<=bytes.size)return bytes.copyOfRange(i+12,i+12+len)};return null}
+    private fun writeMdat(bytes:ByteArray,out:OutputStream){var i=0;while(i+8<=bytes.size){var size=((bytes[i].toLong()and 255)shl 24)or((bytes[i+1].toLong()and 255)shl 16)or((bytes[i+2].toLong()and 255)shl 8)or(bytes[i+3].toLong()and 255);var header=8;if(size==1L){if(i+16>bytes.size)return;size=(0..7).fold(0L){a,n->(a shl 8)or(bytes[i+8+n].toLong()and 255)};header=16};if(size<header||i+size>bytes.size)return;if(bytes[i+4]==0x6d.toByte()&&bytes[i+5]==0x64.toByte()&&bytes[i+6]==0x61.toByte()&&bytes[i+7]==0x74.toByte())out.write(bytes,i+header,(size-header).toInt());i+=size.toInt()}}
 }
